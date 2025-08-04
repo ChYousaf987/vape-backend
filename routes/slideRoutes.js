@@ -10,7 +10,7 @@ const {
 
 const slideRouter = express.Router();
 
-slideRouter.post("/create-slide", authHandler, createSlide);
+slideRouter.post("/create-slide", createSlide);
 slideRouter.get("/slides", getSlides);
 slideRouter.get("/slide/:id", authHandler, getSlideById);
 slideRouter.put("/slide/:id", authHandler, updateSlide);

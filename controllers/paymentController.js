@@ -5,24 +5,39 @@ const orderModel = require("../models/orderModel");
 const { v4: uuidv4 } = require("uuid");
 
 const payment = handler(async (req, res) => {
-  const { products, shipping_address, user_id } = req.body;
-
-  console.log("Payment request received:", {
-    products,
-    shipping_address,
-    user_id,
-  });
+  const { products, shipping_address, order_email, phone_number } = req.body;
+  const user_id = req.user ? req.user._id : `guest_${uuidv4()}`;
 
   if (!products || !Array.isArray(products) || products.length === 0) {
-    console.error("No products provided");
     res.status(400);
     throw new Error("No products provided for checkout");
   }
 
   if (!shipping_address) {
-    console.error("Shipping address missing");
     res.status(400);
     throw new Error("Shipping address is required");
+  }
+
+  if (!order_email) {
+    res.status(400);
+    throw new Error("Email address is required");
+  }
+
+  if (!phone_number) {
+    res.status(400);
+    throw new Error("Phone number is required");
+  }
+
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(order_email)) {
+    res.status(400);
+    throw new Error("Invalid email address");
+  }
+
+  const phoneRegex = /^\+?\d{10,15}$/;
+  if (!phoneRegex.test(phone_number)) {
+    res.status(400);
+    throw new Error("Invalid phone number");
   }
 
   try {
@@ -33,11 +48,32 @@ const payment = handler(async (req, res) => {
           throw new Error(`Product with ID ${item.product_id} not found`);
         }
 
-        // Check stock availability
         if (myProduct.product_stock < item.quantity) {
           throw new Error(
             `Product ${myProduct.product_name} has only ${myProduct.product_stock} units in stock`
           );
+        }
+
+        if (!item.nicotine_strength && item.nicotine_strength !== 0) {
+          throw new Error(
+            `Nicotine strength is required for ${myProduct.product_name}`
+          );
+        }
+
+        if (!item.flavor) {
+          throw new Error(`Flavor is required for ${myProduct.product_name}`);
+        }
+
+        if (
+          !myProduct.nicotine_strengths.includes(Number(item.nicotine_strength))
+        ) {
+          throw new Error(
+            `Invalid nicotine strength for ${myProduct.product_name}`
+          );
+        }
+
+        if (!myProduct.flavors.includes(item.flavor)) {
+          throw new Error(`Invalid flavor for ${myProduct.product_name}`);
         }
 
         const selectedImage =
@@ -50,7 +86,7 @@ const payment = handler(async (req, res) => {
           price_data: {
             currency: "USD",
             product_data: {
-              name: myProduct.product_name,
+              name: `${myProduct.product_name} (${item.nicotine_strength} mg, ${item.flavor})`,
               images: [selectedImage],
             },
             unit_amount: Math.round(myProduct.product_discounted_price * 100),
@@ -65,25 +101,23 @@ const payment = handler(async (req, res) => {
       0
     );
 
-    // Use provided user_id or generate a guest ID
-    const orderUserId = user_id || `guest_${uuidv4()}`;
-
-    // Create order
     const order = await orderModel.create({
-      user_id: orderUserId,
+      user_id,
       products: products.map((item) => ({
         product_id: item.product_id,
         quantity: item.quantity,
         selected_image: item.selected_image,
+        nicotine_strength: item.nicotine_strength,
+        flavor: item.flavor,
       })),
       total_amount,
       shipping_address,
+      order_email,
+      phone_number,
       status: "pending",
       payment_status: "pending",
     });
-    console.log("Order created:", order);
 
-    // Update product stock
     await Promise.all(
       products.map(async (item) => {
         await productModel.findByIdAndUpdate(item.product_id, {
@@ -95,9 +129,9 @@ const payment = handler(async (req, res) => {
     const stripeSession = await stripe.checkout.sessions.create({
       line_items: myItems,
       mode: "payment",
-      success_url: `http://localhost:5173/success`,
+      success_url: `http://localhost:5173/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: "http://localhost:5173/cancel",
-      metadata: { orderId: order._id.toString(), user_id: orderUserId },
+      metadata: { orderId: order._id.toString(), user_id },
     });
 
     await orderModel.findByIdAndUpdate(order._id, {
@@ -113,4 +147,38 @@ const payment = handler(async (req, res) => {
   }
 });
 
-module.exports = { payment };
+const paymentSuccess = handler(async (req, res) => {
+  const { session_id } = req.body;
+
+  if (!session_id) {
+    res.status(400);
+    throw new Error("Session ID is required");
+  }
+
+  try {
+    const session = await stripe.checkout.sessions.retrieve(session_id);
+    if (session.payment_status === "paid") {
+      const order = await orderModel.findById(session.metadata.orderId);
+      if (!order) {
+        res.status(404);
+        throw new Error("Order not found");
+      }
+
+      order.payment_status = "completed";
+      order.status = "processing";
+      await order.save();
+
+      res.status(200).json({ message: "Payment verified and order updated" });
+    } else {
+      res.status(400);
+      throw new Error("Payment not completed");
+    }
+  } catch (error) {
+    console.error("Payment success error:", error.message);
+    res
+      .status(400)
+      .json({ message: error.message || "Failed to verify payment" });
+  }
+});
+
+module.exports = { payment, paymentSuccess };

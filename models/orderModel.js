@@ -3,7 +3,7 @@ const mongoose = require("mongoose");
 const orderSchema = mongoose.Schema(
   {
     user_id: {
-      type: String, // Changed to String to support guest IDs
+      type: String,
       required: true,
     },
     products: [
@@ -21,6 +21,14 @@ const orderSchema = mongoose.Schema(
         selected_image: {
           type: String,
           required: false,
+        },
+        nicotine_strength: {
+          type: Number,
+          required: true,
+        },
+        flavor: {
+          type: String,
+          required: true,
         },
       },
     ],
@@ -41,6 +49,16 @@ const orderSchema = mongoose.Schema(
     shipping_address: {
       type: String,
       required: true,
+    },
+    order_email: {
+      type: String,
+      required: true,
+      match: [/^[^\s@]+@[^\s@]+\.[^\s@]+$/, "Please provide a valid email"],
+    },
+    phone_number: {
+      type: String,
+      required: true,
+      match: [/^\+?\d{10,15}$/, "Please provide a valid phone number"],
     },
     stripe_session_id: {
       type: String,

@@ -2,6 +2,22 @@ const handler = require("express-async-handler");
 const productModel = require("../models/productModel");
 const cartModel = require("../models/cartModel");
 const reviewModel = require("../models/reviewModel");
+const Category = require("../models/categoryModel");
+const path = require("path");
+const mongoose = require("mongoose");
+
+// Debug: Log the resolved path for userModel
+const userModelPath = path.resolve(__dirname, "../models/userModel.js");
+console.log("Attempting to import User model from:", userModelPath);
+
+let User;
+try {
+  User = require("../models/userModel");
+  console.log("User model imported successfully:", !!User);
+} catch (error) {
+  console.error("Failed to import User model:", error.message);
+  throw new Error("Server configuration error: User model not found");
+}
 
 const createProduct = handler(async (req, res) => {
   const {
@@ -11,19 +27,21 @@ const createProduct = handler(async (req, res) => {
     product_discounted_price,
     product_stock,
     product_images,
-    product_catagory,
+    category,
+    subcategories,
     brand_name,
     product_code,
+    nicotine_strengths,
+    flavors,
     rating,
   } = req.body;
 
   if (
     !product_name ||
-    !product_description ||
     !product_base_price ||
     !product_discounted_price ||
     !product_images ||
-    !product_catagory ||
+    !category ||
     !brand_name ||
     !product_code
   ) {
@@ -31,17 +49,36 @@ const createProduct = handler(async (req, res) => {
     throw new Error("Please provide all required fields");
   }
 
+  const categoryExists = await Category.findById(category);
+  if (!categoryExists || categoryExists.parent_category) {
+    res.status(400);
+    throw new Error("Invalid category ID or category is a subcategory");
+  }
+
+  if (subcategories && subcategories.length > 0) {
+    const subcats = await Category.find({
+      _id: { $in: subcategories },
+      parent_category: category,
+    });
+    if (subcats.length !== subcategories.length) {
+      res.status(400);
+      throw new Error(
+        "Invalid subcategories or they do not belong to the specified category"
+      );
+    }
+  }
+
   const basePrice = Number(product_base_price);
   const discountedPrice = Number(product_discounted_price);
 
-  if (isNaN(basePrice) || isNaN(discountedPrice)) {
+  if (
+    isNaN(basePrice) ||
+    isNaN(discountedPrice) ||
+    basePrice <= 0 ||
+    discountedPrice <= 0
+  ) {
     res.status(400);
-    throw new Error("Prices must be valid numbers");
-  }
-
-  if (basePrice <= 0 || discountedPrice <= 0) {
-    res.status(400);
-    throw new Error("Prices must be positive");
+    throw new Error("Prices must be valid positive numbers");
   }
 
   if (discountedPrice > basePrice) {
@@ -49,71 +86,83 @@ const createProduct = handler(async (req, res) => {
     throw new Error("Discounted price cannot be higher than base price");
   }
 
-  if (
-    (product_catagory.includes("Disposables") ||
-      product_catagory.includes("Devices")) &&
-    product_images.length !== 7
-  ) {
-    res.status(400);
-    throw new Error(
-      "Vape/pod products must have exactly 7 images for color variants"
-    );
-  }
+  const nicotineArray =
+    typeof nicotine_strengths === "string"
+      ? nicotine_strengths
+          .split(",")
+          .map((s) => Number(s.trim()))
+          .filter((n) => !isNaN(n))
+      : Array.isArray(nicotine_strengths)
+      ? nicotine_strengths
+      : [0, 3, 6, 12];
+  const flavorsArray =
+    typeof flavors === "string"
+      ? flavors
+          .split(",")
+          .map((f) => f.trim())
+          .filter((f) => f)
+      : Array.isArray(flavors)
+      ? flavors
+      : ["None"];
 
   const product = await productModel.create({
     product_name,
-    product_description,
+    product_description: product_description || "",
     product_base_price: basePrice,
     product_discounted_price: discountedPrice,
-    product_stock: product_stock !== undefined ? product_stock : true,
-    product_images,
-    product_catagory,
+    product_stock: Number(product_stock) || 0,
+    product_images: Array.isArray(product_images) ? product_images : [],
+    category,
+    subcategories: subcategories || [],
     brand_name,
     product_code,
-    rating: rating || 4,
+    nicotine_strengths: nicotineArray,
+    flavors: flavorsArray,
+    rating: Number(rating) || 4,
     reviews: [],
   });
 
-  res.status(201).json({
-    _id: product._id,
-    product_name: product.product_name,
-    product_description: product.product_description,
-    product_base_price: product.product_base_price,
-    product_discounted_price: product.product_discounted_price,
-    product_stock: product.product_stock,
-    product_images: product.product_images,
-    product_catagory: product.product_catagory,
-    brand_name: product.brand_name,
-    product_code: product.product_code,
-    rating: product.rating,
-    createdAt: product.createdAt,
-  });
+  const populatedProduct = await productModel
+    .findById(product._id)
+    .populate("category")
+    .populate("subcategories");
+  res.status(201).json(populatedProduct);
 });
 
 const getProducts = handler(async (req, res) => {
-  const products = await productModel.find().populate("reviews");
+  const products = await productModel
+    .find()
+    .populate("category")
+    .populate("subcategories")
+    .populate("reviews");
   res.status(200).json(products);
 });
 
 const getProductById = handler(async (req, res) => {
   const product = await productModel
     .findById(req.params.id)
+    .populate("category")
+    .populate("subcategories")
     .populate("reviews");
   if (!product) {
-    res.status(400);
+    res.status(404);
     throw new Error("Product not found");
   }
   res.status(200).json(product);
 });
 
 const getProductsByCategory = handler(async (req, res) => {
-  const category = req.params.category;
+  const categoryId = req.params.categoryId;
   const products = await productModel
-    .find({ product_catagory: category })
+    .find({
+      $or: [{ category: categoryId }, { subcategories: categoryId }],
+    })
+    .populate("category")
+    .populate("subcategories")
     .populate("reviews");
   if (!products || products.length === 0) {
     res.status(404);
-    throw new Error("No products found in this category");
+    throw new Error("No products found in this category or subcategory");
   }
   res.status(200).json(products);
 });
@@ -121,7 +170,7 @@ const getProductsByCategory = handler(async (req, res) => {
 const updateProduct = handler(async (req, res) => {
   const product = await productModel.findById(req.params.id);
   if (!product) {
-    res.status(400);
+    res.status(404);
     throw new Error("Product not found");
   }
 
@@ -132,11 +181,35 @@ const updateProduct = handler(async (req, res) => {
     product_discounted_price,
     product_stock,
     product_images,
-    product_catagory,
+    category,
+    subcategories,
     brand_name,
     product_code,
+    nicotine_strengths,
+    flavors,
     rating,
   } = req.body;
+
+  if (category) {
+    const categoryExists = await Category.findById(category);
+    if (!categoryExists || categoryExists.parent_category) {
+      res.status(400);
+      throw new Error("Invalid category ID or category is a subcategory");
+    }
+  }
+
+  if (subcategories && subcategories.length > 0) {
+    const subcats = await Category.find({
+      _id: { $in: subcategories },
+      parent_category: category || product.category,
+    });
+    if (subcats.length !== subcategories.length) {
+      res.status(400);
+      throw new Error(
+        "Invalid subcategories or they do not belong to the specified category"
+      );
+    }
+  }
 
   let basePrice =
     product_base_price !== undefined
@@ -172,20 +245,24 @@ const updateProduct = handler(async (req, res) => {
     throw new Error("Discounted price cannot be higher than base price");
   }
 
-  if (
-    (product_catagory &&
-      (product_catagory.includes("Disposables") ||
-        product_catagory.includes("Devices"))) ||
-    product.product_catagory.includes("Disposables") ||
-    product.product_catagory.includes("Devices")
-  ) {
-    if (product_images && product_images.length !== 7) {
-      res.status(400);
-      throw new Error(
-        "Vape/pod products must have exactly 7 images for color variants"
-      );
-    }
-  }
+  const nicotineArray =
+    typeof nicotine_strengths === "string"
+      ? nicotine_strengths
+          .split(",")
+          .map((s) => Number(s.trim()))
+          .filter((n) => !isNaN(n))
+      : Array.isArray(nicotine_strengths)
+      ? nicotine_strengths
+      : product.nicotine_strengths;
+  const flavorsArray =
+    typeof flavors === "string"
+      ? flavors
+          .split(",")
+          .map((f) => f.trim())
+          .filter((f) => f)
+      : Array.isArray(flavors)
+      ? flavors
+      : product.flavors;
 
   const updatedProduct = await productModel
     .findByIdAndUpdate(
@@ -196,15 +273,22 @@ const updateProduct = handler(async (req, res) => {
         product_base_price: basePrice,
         product_discounted_price: discountedPrice,
         product_stock:
-          product_stock !== undefined ? product_stock : product.product_stock,
+          product_stock !== undefined
+            ? Number(product_stock)
+            : product.product_stock,
         product_images: product_images || product.product_images,
-        product_catagory: product_catagory || product.product_catagory,
+        category: category || product.category,
+        subcategories: subcategories || product.subcategories,
         brand_name: brand_name || product.brand_name,
         product_code: product_code || product.product_code,
-        rating: rating || product.rating,
+        nicotine_strengths: nicotineArray,
+        flavors: flavorsArray,
+        rating: Number(rating) || product.rating,
       },
       { new: true }
     )
+    .populate("category")
+    .populate("subcategories")
     .populate("reviews");
 
   res.status(200).json(updatedProduct);
@@ -213,7 +297,7 @@ const updateProduct = handler(async (req, res) => {
 const deleteProduct = handler(async (req, res) => {
   const product = await productModel.findById(req.params.id);
   if (!product) {
-    res.status(400);
+    res.status(404);
     throw new Error("Product not found");
   }
 
@@ -223,110 +307,268 @@ const deleteProduct = handler(async (req, res) => {
 });
 
 const addToCart = handler(async (req, res) => {
-  const { prod_id, selected_image } = req.body;
-  const user_id = req.user._id;
+  console.log("addToCart - Request body:", req.body);
 
-  const product = await productModel.findById(prod_id);
-  if (!product) {
-    res.status(400);
-    throw new Error("Product not found");
-  }
+  const { user_id, product_id, selected_image, nicotine_strength, flavor } =
+    req.body;
 
-  if (selected_image && !product.product_images.includes(selected_image)) {
-    res.status(400);
-    throw new Error("Invalid color variant selected");
-  }
-
-  const itemExist = await cartModel.findOne({
-    product_id: prod_id,
-    user_id,
-    selected_image,
-  });
-
-  if (itemExist) {
-    itemExist.quantity += 1;
-    await itemExist.save();
-  } else {
-    await cartModel.create({
+  if (!user_id || !product_id || !selected_image || !flavor) {
+    console.log("addToCart - Missing required fields:", {
       user_id,
-      product_id: prod_id,
-      selected_image: selected_image || product.product_images[0],
-      quantity: 1,
+      product_id,
+      selected_image,
+      nicotine_strength,
+      flavor,
     });
+    res.status(400);
+    throw new Error(
+      "All fields (user_id, product_id, selected_image, flavor) are required"
+    );
   }
 
-  const findCart = await cartModel.find({ user_id }).populate("product_id");
-  res.status(200).json(findCart);
-});
-
-const removeFromCart = handler(async (req, res) => {
-  const { prod_id, selected_image } = req.body;
-  const user_id = req.user._id;
-
-  const itemExist = await cartModel.findOne({
-    product_id: prod_id,
-    user_id,
-    selected_image,
-  });
-
-  if (itemExist) {
-    if (itemExist.quantity > 1) {
-      itemExist.quantity -= 1;
-      await itemExist.save();
-    } else {
-      await cartModel.deleteOne({
-        product_id: prod_id,
-        user_id,
-        selected_image,
-      });
-    }
-  } else {
+  if (isNaN(Number(nicotine_strength))) {
+    console.log("addToCart - Invalid nicotine_strength:", nicotine_strength);
     res.status(400);
-    throw new Error("Item not found in cart");
+    throw new Error("Nicotine strength must be a valid number");
   }
 
-  const findCart = await cartModel.find({ user_id }).populate("product_id");
-  res.status(200).json(findCart);
-});
-
-const getMyCart = handler(async (req, res) => {
-  const user_id = req.user._id;
-  const mycart = await cartModel.find({ user_id }).populate("product_id");
-  res.status(200).json(mycart);
-});
-
-const submitReview = handler(async (req, res) => {
-  const { rating, review_text } = req.body;
-  const product_id = req.params.productId;
-  const user_id = req.user?._id; // Optional user_id
-
-  if (!rating || !review_text) {
+  if (typeof flavor !== "string" || flavor.trim() === "") {
+    console.log("addToCart - Invalid flavor:", flavor);
     res.status(400);
-    throw new Error("Rating and review text are required");
+    throw new Error("Flavor must be a non-empty string");
   }
 
-  if (rating < 1 || rating > 5) {
+  if (!mongoose.Types.ObjectId.isValid(product_id)) {
+    console.log("addToCart - Invalid product_id:", product_id);
     res.status(400);
-    throw new Error("Rating must be between 1 and 5");
+    throw new Error("Invalid product ID format");
+  }
+
+  let user;
+  try {
+    user = await User.findById(user_id);
+  } catch (error) {
+    console.error("addToCart - Error finding user:", error.message);
+    res.status(500);
+    throw new Error("Server error while validating user");
+  }
+  if (!user) {
+    console.log("addToCart - User not found for ID:", user_id);
+    res.status(404);
+    throw new Error("User not found");
   }
 
   const product = await productModel.findById(product_id);
   if (!product) {
-    res.status(400);
+    console.log("addToCart - Product not found for ID:", product_id);
+    res.status(404);
     throw new Error("Product not found");
   }
 
-  // Allow anonymous reviews; only check for duplicates if user_id exists
-  if (user_id) {
-    const existingReview = await reviewModel.findOne({ user_id, product_id });
-    if (existingReview) {
-      res.status(400);
-      throw new Error("You have already reviewed this product");
-    }
+  if (!product.flavors.includes(flavor)) {
+    console.log(
+      "addToCart - Flavor not available for product:",
+      flavor,
+      product.flavors
+    );
+    res.status(400);
+    throw new Error(`Flavor '${flavor}' is not available for this product`);
+  }
+
+  if (!product.nicotine_strengths.includes(Number(nicotine_strength))) {
+    console.log(
+      "addToCart - Nicotine strength not available for product:",
+      nicotine_strength,
+      product.nicotine_strengths
+    );
+    res.status(400);
+    throw new Error(
+      `Nicotine strength '${nicotine_strength}' is not available for this product`
+    );
+  }
+
+  let cart = await cartModel.findOne({
+    user_id,
+    product_id,
+    nicotine_strength: Number(nicotine_strength),
+    flavor,
+  });
+
+  if (cart) {
+    console.log(
+      "addToCart - Incrementing quantity for existing cart item:",
+      cart._id
+    );
+    cart.quantity += 1;
+    await cart.save();
+  } else {
+    console.log("addToCart - Creating new cart item:", {
+      user_id,
+      product_id,
+      selected_image,
+      nicotine_strength: Number(nicotine_strength),
+      flavor,
+    });
+    cart = await cartModel.create({
+      user_id,
+      product_id,
+      selected_image,
+      nicotine_strength: Number(nicotine_strength),
+      flavor: flavor.trim(),
+      quantity: 1,
+    });
+  }
+
+  try {
+    console.log("addToCart - Cart saved successfully:", cart);
+  } catch (error) {
+    console.error("addToCart - Error saving cart:", error.message);
+    res.status(500);
+    throw new Error("Server error while saving cart: " + error.message);
+  }
+
+  const populatedCart = await cartModel
+    .findById(cart._id)
+    .populate("product_id");
+  res.status(200).json(populatedCart);
+});
+
+const getMyCart = handler(async (req, res) => {
+  const user_id = req.user?._id;
+  console.log("getMyCart called for user:", user_id);
+
+  if (!user_id) {
+    res.status(401);
+    throw new Error("User not authenticated");
+  }
+
+  const carts = await cartModel.find({ user_id }).populate("product_id");
+  res.status(200).json(carts);
+});
+
+const removeFromCart = handler(async (req, res) => {
+  const { product_id, selected_image, nicotine_strength, flavor } = req.body;
+  const user_id = req.user?._id;
+
+  console.log("removeFromCart called with:", {
+    product_id,
+    selected_image,
+    nicotine_strength,
+    flavor,
+    user_id,
+  });
+
+  if (!user_id) {
+    res.status(401);
+    throw new Error("User not authenticated");
+  }
+
+  if (!product_id || !selected_image || !flavor) {
+    console.log("removeFromCart - Missing required fields:", {
+      product_id,
+      selected_image,
+      nicotine_strength,
+      flavor,
+    });
+    res.status(400);
+    throw new Error(
+      "All fields (product_id, selected_image, flavor) are required"
+    );
+  }
+
+  if (isNaN(Number(nicotine_strength))) {
+    console.log(
+      "removeFromCart - Invalid nicotine_strength:",
+      nicotine_strength
+    );
+    res.status(400);
+    throw new Error("Nicotine strength must be a valid number");
+  }
+
+  if (!mongoose.Types.ObjectId.isValid(product_id)) {
+    console.log("removeFromCart - Invalid product_id:", product_id);
+    res.status(400);
+    throw new Error("Invalid product ID format");
+  }
+
+  let cart = await cartModel.findOne({
+    user_id,
+    product_id,
+    selected_image,
+    nicotine_strength: Number(nicotine_strength),
+    flavor,
+  });
+
+  if (!cart) {
+    console.log("removeFromCart - Cart item not found:", {
+      product_id,
+      selected_image,
+      nicotine_strength,
+      flavor,
+    });
+    res.status(404);
+    throw new Error("Cart item not found");
+  }
+
+  if (cart.quantity > 1) {
+    cart.quantity -= 1;
+    await cart.save();
+  } else {
+    await cartModel.deleteOne({ _id: cart._id });
+  }
+
+  const updatedCarts = await cartModel.find({ user_id }).populate("product_id");
+  res.status(200).json(updatedCarts);
+});
+
+const clearCart = handler(async (req, res) => {
+  const user_id = req.user?._id;
+  console.log("clearCart called for user:", user_id);
+
+  if (!user_id) {
+    res.status(401);
+    throw new Error("User not authenticated");
+  }
+
+  await cartModel.deleteMany({ user_id });
+  res.status(200).json([]);
+});
+
+const submitReview = handler(async (req, res) => {
+  console.log("submitReview - Request body:", req.body);
+
+  const { user_id, rating, review_text } = req.body;
+  const product_id = req.params.productId;
+
+  if (!user_id) {
+    console.log("submitReview - No user_id provided");
+    res.status(400);
+    throw new Error("User ID is required");
+  }
+
+  let user;
+  try {
+    user = await User.findById(user_id);
+  } catch (error) {
+    console.error("submitReview - Error finding user:", error.message);
+    res.status(500);
+    throw new Error("Server error while validating user");
+  }
+  if (!user) {
+    console.log("submitReview - User not found for ID:", user_id);
+    res.status(404);
+    throw new Error("User not found");
+  }
+
+  const product = await productModel.findById(product_id);
+  if (!product) {
+    console.log("submitReview - Product not found for ID:", product_id);
+    res.status(404);
+    throw new Error("Product not found");
   }
 
   const review = await reviewModel.create({
-    user_id: user_id || null, // Store null for anonymous reviews
+    user_id,
     product_id,
     rating,
     review_text,
@@ -334,30 +576,35 @@ const submitReview = handler(async (req, res) => {
 
   product.reviews.push(review._id);
   const reviews = await reviewModel.find({ product_id });
-  const averageRating =
-    reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length || 4;
-  product.rating = averageRating.toFixed(1);
+  const totalRating = reviews.reduce((sum, r) => sum + r.rating, 0);
+  product.rating = totalRating / reviews.length;
   await product.save();
 
-  res.status(201).json({
-    _id: review._id,
-    user_id: review.user_id,
-    product_id: review.product_id,
-    rating: review.rating,
-    review_text: review.review_text,
-    createdAt: review.createdAt,
-  });
+  const populatedReview = await reviewModel
+    .findById(review._id)
+    .populate("user_id", "username");
+  console.log("submitReview - Created review:", populatedReview);
+  res.status(201).json(populatedReview);
 });
 
 const getReviews = handler(async (req, res) => {
   const product_id = req.params.productId;
+  console.log(`getReviews - Fetching reviews for product_id: ${product_id}`);
+
+  const product = await productModel.findById(product_id);
+  if (!product) {
+    console.log(`getReviews - Product not found for ID: ${product_id}`);
+    res.status(404);
+    throw new Error("Product not found");
+  }
+
   const reviews = await reviewModel
     .find({ product_id })
-    .populate("user_id", "name");
-  if (!reviews || reviews.length === 0) {
-    res.status(404);
-    throw new Error("No reviews found for this product");
-  }
+    .populate("user_id", "username");
+  console.log(
+    `getReviews - Found ${reviews.length} reviews for product_id: ${product_id}`
+  );
+
   res.status(200).json(reviews);
 });
 
@@ -371,6 +618,7 @@ module.exports = {
   addToCart,
   getMyCart,
   removeFromCart,
+  clearCart,
   submitReview,
   getReviews,
 };

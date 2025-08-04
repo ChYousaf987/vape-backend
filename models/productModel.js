@@ -28,11 +28,17 @@ const productSchema = mongoose.Schema(
       required: true,
       default: [],
     },
-    product_catagory: {
-      type: Array,
+    category: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Category",
       required: true,
-      default: [],
     },
+    subcategories: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Category",
+      },
+    ],
     brand_name: {
       type: String,
       required: true,
@@ -41,6 +47,16 @@ const productSchema = mongoose.Schema(
       type: String,
       required: true,
       unique: true,
+    },
+    nicotine_strengths: {
+      type: [Number],
+      required: false,
+      default: [0, 3, 6, 12],
+    },
+    flavors: {
+      type: [String],
+      required: false,
+      default: ["None"],
     },
     rating: {
       type: Number,

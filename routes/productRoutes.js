@@ -1,5 +1,5 @@
 const express = require("express");
-const authHandler = require("../middlewares/authMiddleware");
+const router = express.Router();
 const {
   createProduct,
   getProducts,
@@ -8,24 +8,25 @@ const {
   updateProduct,
   deleteProduct,
   addToCart,
-  removeFromCart,
   getMyCart,
+  removeFromCart,
+  clearCart,
   submitReview,
   getReviews,
 } = require("../controllers/productController");
+const authHandler = require("../middlewares/authMiddleware");
 
-const productRouter = express.Router();
+router.get("/products", getProducts); // Public access
+router.get("/product/:id", getProductById); // Public access
+router.get("/category/:categoryId", getProductsByCategory); // Public access
+router.post("/create-product", createProduct); // Public access
+router.put("/product/:id", updateProduct); // Public access
+router.delete("/product/:id", deleteProduct); // Public access
+router.post("/cart", addToCart); // No auth
+router.get("/cart", authHandler, getMyCart); // Requires auth
+router.post("/cart/remove", authHandler, removeFromCart); // Requires auth
+router.delete("/cart/clear", authHandler, clearCart); // Requires auth
+router.post("/reviews/:productId", submitReview); // No auth
+router.get("/reviews/:productId", getReviews); // Public access
 
-productRouter.post("/create-product", createProduct);
-productRouter.get("/products", getProducts);
-productRouter.get("/product/:id", getProductById);
-productRouter.get("/category/:category", getProductsByCategory);
-productRouter.put("/product/:id", updateProduct);
-productRouter.delete("/product/:id", deleteProduct);
-productRouter.post("/add-to-cart", authHandler, addToCart);
-productRouter.post("/remove-from-cart", authHandler, removeFromCart);
-productRouter.get("/get-my-cart", authHandler, getMyCart);
-productRouter.post("/review/:productId", submitReview); // Removed authHandler
-productRouter.get("/reviews/:productId", getReviews);
-
-module.exports = productRouter;
+module.exports = router;

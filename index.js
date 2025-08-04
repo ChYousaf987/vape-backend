@@ -3,6 +3,9 @@ const errorHandler = require("./middlewares/errorMiddleware");
 const connectDB = require("./config/connectDB");
 const cors = require("cors");
 const slideRouter = require("./routes/slideRoutes");
+const categoryRouter = require("./routes/categoryRoutes");
+const productRouter = require("./routes/productRoutes");
+const brandRouter = require("./routes/brandRoutes");
 const multer = require("multer");
 
 const app = express();
@@ -20,33 +23,31 @@ app.use(
       "https://dasboard.cloudandroots.com",
     ],
     methods: ["GET", "POST", "PUT", "DELETE"],
+    credentials: true,
   })
 );
 
 // Connect to MongoDB
 connectDB();
 
-// Configure multer for file uploads
+// Configure multer for slide routes only
 const storage = multer.memoryStorage();
 const upload = multer({
   storage: storage,
   limits: {
-    fileSize: 10 * 1024 * 1024,
-    fieldSize: 10 * 1024 * 1024,
+    fileSize: 10 * 1024 * 1024, // 10MB limit
+    fieldSize: 10 * 1024 * 1024, // 10MB limit
   },
   fileFilter: (req, file, cb) => {
-    console.log("Multer fileFilter - file:", {
-      fieldname: file.fieldname,
-      originalname: file.originalname,
-      mimetype: file.mimetype,
-      size: file.size,
-    });
     if (!file.mimetype.startsWith("image/")) {
       return cb(new Error("Only image files are allowed"), false);
     }
     cb(null, true);
   },
-});
+}).fields([
+  { name: "image", maxCount: 1 },
+  { name: "background", maxCount: 1 },
+]);
 
 // Multer error handling middleware
 const handleMulterError = (err, req, res, next) => {
@@ -58,16 +59,18 @@ const handleMulterError = (err, req, res, next) => {
 };
 
 // Middleware for parsing JSON and URL-encoded bodies
-app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ extended: false, limit: "50mb" }));
 
 // Routes
-app.use("/api/users/", require("./routes/userRoutes"));
-app.use("/api/admins/", require("./routes/adminRoutes"));
-app.use("/api/products/", require("./routes/productRoutes"));
-app.use("/api/payment/", require("./routes/paymentRoutes"));
-app.use("/api/orders/", require("./routes/orderRoutes"));
-app.use("/api/slides", upload.single("image"), slideRouter);
+app.use("/api/users", require("./routes/userRoutes"));
+app.use("/api/admins", require("./routes/adminRoutes"));
+app.use("/api/products", productRouter);
+app.use("/api/payment", require("./routes/paymentRoutes"));
+app.use("/api/orders", require("./routes/orderRoutes"));
+app.use("/api/slides", upload, slideRouter);
+app.use("/api/categories", categoryRouter);
+app.use("/api/brands", brandRouter);
 
 // Apply multer error handling after routes
 app.use(handleMulterError);

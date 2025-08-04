@@ -12,8 +12,8 @@ const validateCloudinaryConfig = () => {
 
   console.log("Cloudinary config:", {
     cloud_name: process.env.Cloud_Name,
-    api_key: !!process.env.API_Key, // Hide actual API key for security
-    api_secret: !!process.env.API_Secret, // Hide actual API secret for security
+    api_key: !!process.env.API_Key,
+    api_secret: !!process.env.API_Secret,
   });
 
   for (const [key, value] of Object.entries(requiredEnvVars)) {
@@ -32,25 +32,25 @@ const validateCloudinaryConfig = () => {
 const createSlide = handler(async (req, res) => {
   console.log("createSlide - req.body:", req.body);
   console.log(
-    "createSlide - req.file:",
-    req.file
-      ? {
-          fieldname: req.file.fieldname,
-          originalname: req.file.originalname,
-          mimetype: req.file.mimetype,
-          size: req.file.size,
-        }
-      : "No file received"
+    "createSlide - req.files:",
+    req.files
+      ? Object.keys(req.files).map((key) => ({
+          fieldname: req.files[key].fieldname,
+          originalname: req.files[key].originalname,
+          mimetype: req.files[key].mimetype,
+          size: req.files[key].size,
+        }))
+      : "No files received"
   );
 
   const { title, subtitle, buttonText, link } = req.body;
 
-  if (!title || !subtitle || !buttonText || !req.file) {
+  if (!title || !subtitle || !buttonText || !req.files?.image) {
     console.error("Missing required fields:", {
       title: !!title,
       subtitle: !!subtitle,
       buttonText: !!buttonText,
-      file: !!req.file,
+      image: !!req.files?.image,
     });
     res.status(400);
     throw new Error("Please provide all required fields, including an image");
@@ -60,28 +60,52 @@ const createSlide = handler(async (req, res) => {
     // Validate Cloudinary configuration
     validateCloudinaryConfig();
 
-    // Upload image to Cloudinary
-    const result = await new Promise((resolve, reject) => {
+    // Upload main image to Cloudinary
+    const imageResult = await new Promise((resolve, reject) => {
       const stream = cloudinary.uploader.upload_stream(
         { folder: "slides" },
         (error, result) => {
           if (error) {
-            console.error("Cloudinary upload error:", error.message);
+            console.error("Cloudinary upload error (image):", error.message);
             reject(new Error(`Cloudinary error: ${error.message}`));
           } else {
             resolve(result);
           }
         }
       );
-      stream.end(req.file.buffer);
+      stream.end(req.files.image[0].buffer);
     });
+
+    // Upload background image to Cloudinary if provided
+    let backgroundUrl = null;
+    if (req.files?.background) {
+      const backgroundResult = await new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          { folder: "slide_backgrounds" },
+          (error, result) => {
+            if (error) {
+              console.error(
+                "Cloudinary upload error (background):",
+                error.message
+              );
+              reject(new Error(`Cloudinary error: ${error.message}`));
+            } else {
+              resolve(result);
+            }
+          }
+        );
+        stream.end(req.files.background[0].buffer);
+      });
+      backgroundUrl = backgroundResult.secure_url;
+    }
 
     const slide = await slideModel.create({
       title,
       subtitle,
       buttonText,
-      image: result.secure_url,
+      image: imageResult.secure_url,
       link: link || "/products",
+      background: backgroundUrl,
     });
 
     res.status(201).json({
@@ -91,6 +115,7 @@ const createSlide = handler(async (req, res) => {
       buttonText: slide.buttonText,
       image: slide.image,
       link: slide.link,
+      background: slide.background,
       createdAt: slide.createdAt,
     });
   } catch (error) {
@@ -109,7 +134,7 @@ const getSlideById = handler(async (req, res) => {
   const slide = await slideModel.findById(req.params.id);
 
   if (!slide) {
-    res.status(404);
+    res.status(400);
     throw new Error("Slide not found");
   }
 
@@ -119,75 +144,97 @@ const getSlideById = handler(async (req, res) => {
 const updateSlide = handler(async (req, res) => {
   console.log("updateSlide - req.body:", req.body);
   console.log(
-    "updateSlide - req.file:",
-    req.file
-      ? {
-          fieldname: req.file.fieldname,
-          originalname: req.file.originalname,
-          mimetype: req.file.mimetype,
-          size: req.file.size,
-        }
-      : "No file received"
+    "updateSlide - req.files:",
+    req.files
+      ? Object.keys(req.files).map((key) => ({
+          fieldname: req.files[key].fieldname,
+          originalname: req.files[key].originalname,
+          mimetype: req.files[key].mimetype,
+          size: req.files[key].size,
+        }))
+      : "No files received"
   );
 
   const slide = await slideModel.findById(req.params.id);
 
   if (!slide) {
-    res.status(404);
+    res.status(400);
     throw new Error("Slide not found");
   }
 
   const { title, subtitle, buttonText, link } = req.body;
 
-  let imageUrl = slide.image;
-  if (req.file) {
-    try {
-      // Validate Cloudinary configuration
-      validateCloudinaryConfig();
+  try {
+    // Validate Cloudinary configuration
+    validateCloudinaryConfig();
 
-      // Upload new image to Cloudinary
-      const result = await new Promise((resolve, reject) => {
+    let imageUrl = slide.image;
+    if (req.files?.image) {
+      const imageResult = await new Promise((resolve, reject) => {
         const stream = cloudinary.uploader.upload_stream(
           { folder: "slides" },
           (error, result) => {
             if (error) {
-              console.error("Cloudinary upload error:", error.message);
+              console.error("Cloudinary upload error (image):", error.message);
               reject(new Error(`Cloudinary error: ${error.message}`));
             } else {
               resolve(result);
             }
           }
         );
-        stream.end(req.file.buffer);
+        stream.end(req.files.image[0].buffer);
       });
-      imageUrl = result.secure_url;
-    } catch (error) {
-      console.error("Error in updateSlide:", error.message);
-      res.status(500);
-      throw new Error(`Failed to upload image: ${error.message}`);
+      imageUrl = imageResult.secure_url;
     }
+
+    let backgroundUrl = slide.background;
+    if (req.files?.background) {
+      const backgroundResult = await new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          { folder: "slide_backgrounds" },
+          (error, result) => {
+            if (error) {
+              console.error(
+                "Cloudinary upload error (background):",
+                error.message
+              );
+              reject(new Error(`Cloudinary error: ${error.message}`));
+            } else {
+              resolve(result);
+            }
+          }
+        );
+        stream.end(req.files.background[0].buffer);
+      });
+      backgroundUrl = backgroundResult.secure_url;
+    }
+
+    const updatedSlide = await slideModel.findByIdAndUpdate(
+      req.params.id,
+      {
+        title: title || slide.title,
+        subtitle: subtitle || slide.subtitle,
+        buttonText: buttonText || slide.buttonText,
+        image: imageUrl,
+        link: link || slide.link,
+        background: backgroundUrl,
+      },
+      { new: true }
+    );
+
+    res.status(200).json(updatedSlide);
+  } catch (error) {
+    console.error("Error in updateSlide:", error.message);
+    res.status(500);
+    throw new Error(`Failed to update slide: ${error.message}`);
   }
-
-  const updatedSlide = await slideModel.findByIdAndUpdate(
-    req.params.id,
-    {
-      title: title || slide.title,
-      subtitle: subtitle || slide.subtitle,
-      buttonText: buttonText || slide.buttonText,
-      image: imageUrl,
-      link: link || slide.link,
-    },
-    { new: true }
-  );
-
-  res.status(200).json(updatedSlide);
 });
 
 const deleteSlide = handler(async (req, res) => {
   const slide = await slideModel.findById(req.params.id);
 
   if (!slide) {
-    res.status(404);
+    res.status(400);
     throw new Error("Slide not found");
   }
 
